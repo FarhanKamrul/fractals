@@ -6,7 +6,75 @@ parameter c, while z varies. Different values of c produce vastly different
 and beautiful patterns.
 """
 
+import numpy as np
+try:
+    from numba import jit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    # Dummy decorator if numba not available
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 from .base import BaseVisualization
+
+
+@jit(nopython=True, cache=True)
+def julia_compute_jit(zx, zy, cx, cy, max_iter, escape_radius_sq):
+    """
+    JIT-compiled Julia set computation for speed.
+
+    Args:
+        zx: Initial real component of z
+        zy: Initial imaginary component of z
+        cx: Real component of c (constant)
+        cy: Imaginary component of c (constant)
+        max_iter: Maximum iterations
+        escape_radius_sq: Squared escape radius
+
+    Returns:
+        Number of iterations before escape
+    """
+    for iteration in range(max_iter):
+        zx_sq = zx * zx
+        zy_sq = zy * zy
+
+        if zx_sq + zy_sq > escape_radius_sq:
+            return iteration
+
+        zy = 2.0 * zx * zy + cy
+        zx = zx_sq - zy_sq + cx
+
+    return max_iter
+
+
+@jit(nopython=True, parallel=True, cache=True)
+def julia_compute_array(x_array, y_array, cx, cy, max_iter, escape_radius_sq):
+    """
+    JIT-compiled vectorized Julia set computation.
+
+    Args:
+        x_array: Flattened array of x coordinates
+        y_array: Flattened array of y coordinates
+        cx: Real component of c (constant)
+        cy: Imaginary component of c (constant)
+        max_iter: Maximum iterations
+        escape_radius_sq: Squared escape radius
+
+    Returns:
+        Array of iteration counts
+    """
+    n = len(x_array)
+    result = np.zeros(n, dtype=np.int32)
+
+    for i in range(n):
+        result[i] = julia_compute_jit(
+            x_array[i], y_array[i], cx, cy, max_iter, escape_radius_sq
+        )
+
+    return result
 
 
 class Julia(BaseVisualization):
@@ -40,7 +108,7 @@ class Julia(BaseVisualization):
         return {
             'center_x': 0.0,
             'center_y': 0.0,
-            'zoom': 0.5,
+            'zoom': 1.0,  # 2x zoom increase from 0.5
             'max_iter': 256,
             'escape_radius': 2.0,
             'c_real': -0.7,
@@ -61,33 +129,30 @@ class Julia(BaseVisualization):
         # c is fixed for Julia sets
         cx = self.get_param('c_real')
         cy = self.get_param('c_imag')
-
-        # z starts at the point we're testing
-        zx, zy = x, y
-
-        # Get escape radius
         escape_radius = self.get_param('escape_radius', 2.0)
         escape_radius_sq = escape_radius * escape_radius
 
-        # Iterate z = z² + c
-        iteration = 0
-        while iteration < self.max_iter:
-            # Compute z²
-            zx_sq = zx * zx
-            zy_sq = zy * zy
+        # Use JIT-compiled function for speed
+        return int(julia_compute_jit(x, y, cx, cy, self.max_iter, escape_radius_sq))
 
-            # Check if escaped
-            if zx_sq + zy_sq > escape_radius_sq:
-                break
+    def compute_array(self, x_array, y_array):
+        """
+        Compute iterations for arrays of points (vectorized, JIT-compiled).
 
-            # z = z² + c
-            # (zx + zy*i)² = zx² - zy² + 2*zx*zy*i
-            zy = 2 * zx * zy + cy
-            zx = zx_sq - zy_sq + cx
+        Args:
+            x_array: Array of x coordinates
+            y_array: Array of y coordinates
 
-            iteration += 1
+        Returns:
+            Array of iteration counts
+        """
+        cx = self.get_param('c_real')
+        cy = self.get_param('c_imag')
+        escape_radius = self.get_param('escape_radius', 2.0)
+        escape_radius_sq = escape_radius * escape_radius
 
-        return iteration
+        # Use JIT-compiled vectorized function
+        return julia_compute_array(x_array, y_array, cx, cy, self.max_iter, escape_radius_sq)
 
     def set_c(self, c_real: float, c_imag: float):
         """

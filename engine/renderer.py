@@ -76,9 +76,9 @@ class Renderer:
         pygame.display.flip()
 
     def render_optimized(self, visualization, color_scheme: ColorScheme,
-                        show_info: bool = True, chunk_size: int = 8):
+                        show_info: bool = True, chunk_size: int = 64):
         """
-        Optimized rendering with chunked updates for responsiveness.
+        Optimized rendering with numpy arrays and chunked updates.
 
         Args:
             visualization: BaseVisualization instance to render
@@ -86,25 +86,41 @@ class Renderer:
             show_info: Whether to display info overlay
             chunk_size: Number of rows to render per frame
         """
+        # Create coordinate grids
+        aspect = self.width / self.height
+
         # Render in chunks to maintain responsiveness
         for start_y in range(0, self.height, chunk_size):
             end_y = min(start_y + chunk_size, self.height)
+            chunk_height = end_y - start_y
 
-            for y in range(start_y, end_y):
-                for x in range(self.width):
-                    # Convert screen coordinates to world coordinates
-                    world_x, world_y = visualization.screen_to_world(
-                        x, y, self.width, self.height
-                    )
+            # Create meshgrid for this chunk
+            x_indices = np.arange(self.width)
+            y_indices = np.arange(start_y, end_y)
+            x_grid, y_grid = np.meshgrid(x_indices, y_indices)
 
-                    # Compute iteration count
-                    iteration = visualization.compute(world_x, world_y)
+            # Convert screen coordinates to world coordinates (vectorized)
+            norm_x = (x_grid / self.width) * 2 - 1
+            norm_y = (y_grid / self.height) * 2 - 1
 
-                    # Get color from scheme
-                    color = color_scheme.get_color(iteration, visualization.max_iter)
+            world_x = visualization.center_x + (norm_x * aspect) / visualization.zoom
+            world_y = visualization.center_y + norm_y / visualization.zoom
 
-                    # Draw pixel
-                    self.surface.set_at((x, y), color)
+            # Compute fractal for all pixels in chunk (vectorized)
+            iterations = self._compute_fractal_vectorized(
+                world_x, world_y, visualization
+            )
+
+            # Convert iterations to colors (vectorized)
+            colors = self._get_colors_vectorized(
+                iterations, visualization.max_iter, color_scheme
+            )
+
+            # Blit chunk to surface using surfarray (very fast)
+            chunk_surface = pygame.surfarray.make_surface(
+                np.transpose(colors, (1, 0, 2))
+            )
+            self.surface.blit(chunk_surface, (0, start_y))
 
             # Update display with partial progress
             self.screen.blit(self.surface, (0, 0))
@@ -117,6 +133,61 @@ class Renderer:
         if show_info:
             self.draw_info(visualization, color_scheme)
             pygame.display.flip()
+
+    def _compute_fractal_vectorized(self, world_x, world_y, visualization):
+        """
+        Compute fractal iterations for a grid of points (vectorized).
+
+        Args:
+            world_x: 2D array of x coordinates
+            world_y: 2D array of y coordinates
+            visualization: Visualization instance
+
+        Returns:
+            2D array of iteration counts
+        """
+        shape = world_x.shape
+
+        # Flatten arrays for processing
+        x_flat = world_x.flatten()
+        y_flat = world_y.flatten()
+
+        # Use compute_array if available (much faster with JIT)
+        if hasattr(visualization, 'compute_array'):
+            iterations_flat = visualization.compute_array(x_flat, y_flat)
+            iterations = iterations_flat.reshape(shape)
+        else:
+            # Fallback to individual compute calls
+            iterations = np.zeros(shape, dtype=np.int32)
+            for i in range(len(x_flat)):
+                iterations.flat[i] = visualization.compute(x_flat[i], y_flat[i])
+
+        return iterations
+
+    def _get_colors_vectorized(self, iterations, max_iter, color_scheme):
+        """
+        Convert iteration counts to RGB colors (vectorized).
+
+        Args:
+            iterations: 2D array of iteration counts
+            max_iter: Maximum iteration count
+            color_scheme: ColorScheme instance
+
+        Returns:
+            3D array of RGB values (height, width, 3)
+        """
+        shape = iterations.shape
+        colors = np.zeros((*shape, 3), dtype=np.uint8)
+
+        # Flatten for processing
+        iter_flat = iterations.flatten()
+
+        # Get colors for each iteration count
+        for i in range(len(iter_flat)):
+            color = color_scheme.get_color(iter_flat[i], max_iter)
+            colors.reshape(-1, 3)[i] = color
+
+        return colors
 
     def draw_info(self, visualization, color_scheme: ColorScheme,
                  rendering: bool = False, progress: float = 1.0):

@@ -5,7 +5,73 @@ The Mandelbrot set is the set of complex numbers c for which the function
 f(z) = z² + c does not diverge when iterated from z = 0.
 """
 
+import numpy as np
+try:
+    from numba import jit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    # Dummy decorator if numba not available
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 from .base import BaseVisualization
+
+
+@jit(nopython=True, cache=True)
+def mandelbrot_compute_jit(cx, cy, max_iter, escape_radius_sq):
+    """
+    JIT-compiled Mandelbrot computation for speed.
+
+    Args:
+        cx: Real component of c
+        cy: Imaginary component of c
+        max_iter: Maximum iterations
+        escape_radius_sq: Squared escape radius
+
+    Returns:
+        Number of iterations before escape
+    """
+    zx, zy = 0.0, 0.0
+
+    for iteration in range(max_iter):
+        zx_sq = zx * zx
+        zy_sq = zy * zy
+
+        if zx_sq + zy_sq > escape_radius_sq:
+            return iteration
+
+        zy = 2.0 * zx * zy + cy
+        zx = zx_sq - zy_sq + cx
+
+    return max_iter
+
+
+@jit(nopython=True, parallel=True, cache=True)
+def mandelbrot_compute_array(x_array, y_array, max_iter, escape_radius_sq):
+    """
+    JIT-compiled vectorized Mandelbrot computation.
+
+    Args:
+        x_array: Flattened array of x coordinates
+        y_array: Flattened array of y coordinates
+        max_iter: Maximum iterations
+        escape_radius_sq: Squared escape radius
+
+    Returns:
+        Array of iteration counts
+    """
+    n = len(x_array)
+    result = np.zeros(n, dtype=np.int32)
+
+    for i in range(n):
+        result[i] = mandelbrot_compute_jit(
+            x_array[i], y_array[i], max_iter, escape_radius_sq
+        )
+
+    return result
 
 
 class Mandelbrot(BaseVisualization):
@@ -29,7 +95,7 @@ class Mandelbrot(BaseVisualization):
         return {
             'center_x': -0.5,
             'center_y': 0.0,
-            'zoom': 0.5,
+            'zoom': 1.0,  # 2x zoom increase from 0.5
             'max_iter': 256,
             'escape_radius': 2.0,
         }
@@ -45,32 +111,25 @@ class Mandelbrot(BaseVisualization):
         Returns:
             Number of iterations before escape (or max_iter)
         """
-        # c is the complex number we're testing
-        cx, cy = x, y
-
-        # z starts at 0
-        zx, zy = 0.0, 0.0
-
-        # Get escape radius
         escape_radius = self.get_param('escape_radius', 2.0)
         escape_radius_sq = escape_radius * escape_radius
 
-        # Iterate z = z² + c
-        iteration = 0
-        while iteration < self.max_iter:
-            # Compute z²
-            zx_sq = zx * zx
-            zy_sq = zy * zy
+        # Use JIT-compiled function for speed
+        return int(mandelbrot_compute_jit(x, y, self.max_iter, escape_radius_sq))
 
-            # Check if escaped
-            if zx_sq + zy_sq > escape_radius_sq:
-                break
+    def compute_array(self, x_array, y_array):
+        """
+        Compute iterations for arrays of points (vectorized, JIT-compiled).
 
-            # z = z² + c
-            # (zx + zy*i)² = zx² - zy² + 2*zx*zy*i
-            zy = 2 * zx * zy + cy
-            zx = zx_sq - zy_sq + cx
+        Args:
+            x_array: Array of x coordinates
+            y_array: Array of y coordinates
 
-            iteration += 1
+        Returns:
+            Array of iteration counts
+        """
+        escape_radius = self.get_param('escape_radius', 2.0)
+        escape_radius_sq = escape_radius * escape_radius
 
-        return iteration
+        # Use JIT-compiled vectorized function
+        return mandelbrot_compute_array(x_array, y_array, self.max_iter, escape_radius_sq)
