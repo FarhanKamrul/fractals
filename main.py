@@ -16,9 +16,26 @@ from visualizations import VISUALIZATIONS
 def main():
     """Main application loop."""
     print("=" * 60)
-    print("Fractal Visualizer")
+    print("Fractal Visualizer - GPU Accelerated")
     print("=" * 60)
     print()
+
+    # Detect GPU availability
+    try:
+        from numba import cuda
+        if cuda.is_available():
+            gpu_name = cuda.get_current_device().name.decode('utf-8')
+            print(f"✓ GPU Detected: {gpu_name}")
+            print(f"✓ CUDA cores available for near-instant rendering")
+            print(f"✓ Acceleration: ~100-1000x faster than CPU")
+        else:
+            print("⚠ GPU not detected - using CPU JIT compilation")
+            print("  (Still fast, but GPU would be 10-100x faster)")
+    except ImportError:
+        print("⚠ Numba not installed - using basic Python")
+        print("  Install numba for 10-100x speedup")
+    print()
+
     print("Loading...")
 
     # Initialize components

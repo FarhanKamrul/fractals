@@ -8,10 +8,12 @@ and beautiful patterns.
 
 import numpy as np
 try:
-    from numba import jit
+    from numba import jit, cuda
     NUMBA_AVAILABLE = True
+    CUDA_AVAILABLE = cuda.is_available()
 except ImportError:
     NUMBA_AVAILABLE = False
+    CUDA_AVAILABLE = False
     # Dummy decorator if numba not available
     def jit(*args, **kwargs):
         def decorator(func):
@@ -75,6 +77,89 @@ def julia_compute_array(x_array, y_array, cx, cy, max_iter, escape_radius_sq):
         )
 
     return result
+
+
+if CUDA_AVAILABLE:
+    @cuda.jit
+    def julia_kernel_cuda(x_array, y_array, result, cx, cy, max_iter, escape_radius_sq):
+        """
+        CUDA kernel for GPU-accelerated Julia set computation.
+
+        Each GPU thread computes one pixel.
+
+        Args:
+            x_array: Array of x coordinates (z initial values)
+            y_array: Array of y coordinates (z initial values)
+            result: Output array for iteration counts
+            cx: Real component of c (constant)
+            cy: Imaginary component of c (constant)
+            max_iter: Maximum iterations
+            escape_radius_sq: Squared escape radius
+        """
+        idx = cuda.grid(1)
+
+        if idx < x_array.size:
+            zx = x_array[idx]
+            zy = y_array[idx]
+
+            iteration = 0
+            while iteration < max_iter:
+                zx_sq = zx * zx
+                zy_sq = zy * zy
+
+                if zx_sq + zy_sq > escape_radius_sq:
+                    break
+
+                zy = 2.0 * zx * zy + cy
+                zx = zx_sq - zy_sq + cx
+                iteration += 1
+
+            result[idx] = iteration
+
+    def julia_compute_gpu(x_array, y_array, cx, cy, max_iter, escape_radius_sq):
+        """
+        GPU-accelerated Julia set computation using CUDA.
+
+        Args:
+            x_array: Flattened array of x coordinates
+            y_array: Flattened array of y coordinates
+            cx: Real component of c (constant)
+            cy: Imaginary component of c (constant)
+            max_iter: Maximum iterations
+            escape_radius_sq: Squared escape radius
+
+        Returns:
+            Array of iteration counts
+        """
+        # Ensure arrays are contiguous
+        x_array = np.ascontiguousarray(x_array, dtype=np.float64)
+        y_array = np.ascontiguousarray(y_array, dtype=np.float64)
+
+        n = len(x_array)
+        result = np.zeros(n, dtype=np.int32)
+
+        # Copy data to GPU
+        d_x = cuda.to_device(x_array)
+        d_y = cuda.to_device(y_array)
+        d_result = cuda.to_device(result)
+
+        # Configure kernel launch
+        threads_per_block = 256
+        blocks = (n + threads_per_block - 1) // threads_per_block
+
+        # Launch kernel
+        julia_kernel_cuda[blocks, threads_per_block](
+            d_x, d_y, d_result, cx, cy, max_iter, escape_radius_sq
+        )
+
+        # Copy result back to CPU
+        d_result.copy_to_host(result)
+
+        return result
+else:
+    def julia_compute_gpu(x_array, y_array, cx, cy, max_iter, escape_radius_sq):
+        """Fallback when CUDA not available."""
+        return julia_compute_array(x_array, y_array, cx, cy, max_iter, escape_radius_sq)
 
 
 class Julia(BaseVisualization):
@@ -153,6 +238,25 @@ class Julia(BaseVisualization):
 
         # Use JIT-compiled vectorized function
         return julia_compute_array(x_array, y_array, cx, cy, self.max_iter, escape_radius_sq)
+
+    def compute_gpu(self, x_array, y_array):
+        """
+        GPU-accelerated computation for arrays of points using CUDA.
+
+        Args:
+            x_array: Array of x coordinates
+            y_array: Array of y coordinates
+
+        Returns:
+            Array of iteration counts
+        """
+        cx = self.get_param('c_real')
+        cy = self.get_param('c_imag')
+        escape_radius = self.get_param('escape_radius', 2.0)
+        escape_radius_sq = escape_radius * escape_radius
+
+        # Use GPU-accelerated function (falls back to CPU if CUDA unavailable)
+        return julia_compute_gpu(x_array, y_array, cx, cy, self.max_iter, escape_radius_sq)
 
     def set_c(self, c_real: float, c_imag: float):
         """

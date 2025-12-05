@@ -138,6 +138,11 @@ class Renderer:
         """
         Compute fractal iterations for a grid of points (vectorized).
 
+        Automatically selects best available computation method:
+        1. GPU (CUDA) if available - fastest
+        2. CPU with JIT compilation - fast
+        3. Pure Python - slow fallback
+
         Args:
             world_x: 2D array of x coordinates
             world_y: 2D array of y coordinates
@@ -152,12 +157,16 @@ class Renderer:
         x_flat = world_x.flatten()
         y_flat = world_y.flatten()
 
-        # Use compute_array if available (much faster with JIT)
-        if hasattr(visualization, 'compute_array'):
+        # Try GPU computation first (fastest)
+        if hasattr(visualization, 'compute_gpu'):
+            iterations_flat = visualization.compute_gpu(x_flat, y_flat)
+            iterations = iterations_flat.reshape(shape)
+        # Fall back to CPU JIT (fast)
+        elif hasattr(visualization, 'compute_array'):
             iterations_flat = visualization.compute_array(x_flat, y_flat)
             iterations = iterations_flat.reshape(shape)
+        # Last resort: pure Python (slow)
         else:
-            # Fallback to individual compute calls
             iterations = np.zeros(shape, dtype=np.int32)
             for i in range(len(x_flat)):
                 iterations.flat[i] = visualization.compute(x_flat[i], y_flat[i])
