@@ -201,6 +201,12 @@ class Renderer:
         original_max_iter = visualization.max_iter
         visualization.max_iter = visualization.calculate_adaptive_iterations(quality_factor)
 
+        # For refinement, render to temporary surface to avoid visible boundary
+        if refining:
+            temp_surface = pygame.Surface((self.width, self.height))
+        else:
+            temp_surface = self.surface
+
         # Render in chunks to maintain responsiveness
         for start_y in range(0, self.height, chunk_size):
             end_y = min(start_y + chunk_size, self.height)
@@ -232,18 +238,23 @@ class Renderer:
             chunk_surface = pygame.surfarray.make_surface(
                 np.transpose(colors, (1, 0, 2))
             )
-            self.surface.blit(chunk_surface, (0, start_y))
+            temp_surface.blit(chunk_surface, (0, start_y))
 
-            # Update display with partial progress
-            self.screen.blit(self.surface, (0, 0))
-            if show_info:
-                quality_percent = int(quality_factor * 100)
-                self.draw_info(visualization, color_scheme, rendering=True,
-                             progress=end_y / self.height, quality=quality_percent)
-            pygame.display.flip()
+            # Update display with partial progress (skip for refinement to avoid boundary)
+            if not refining:
+                self.screen.blit(self.surface, (0, 0))
+                if show_info:
+                    quality_percent = int(quality_factor * 100)
+                    self.draw_info(visualization, color_scheme, rendering=True,
+                                 progress=end_y / self.height, quality=quality_percent)
+                pygame.display.flip()
 
         # Restore original max_iter
         visualization.max_iter = original_max_iter
+
+        # For refinement, copy temp_surface to main surface and display in one operation
+        if refining:
+            self.surface.blit(temp_surface, (0, 0))
 
         # Cache the rendered surface and state for smooth zoom/pan
         if quality_factor >= 0.9:  # Only cache high quality renders
@@ -251,9 +262,11 @@ class Renderer:
             self.last_render_state = (visualization.center_x, visualization.center_y, visualization.zoom)
 
         # Final update without progress bar
-        if show_info:
-            quality_percent = int(quality_factor * 100)
-            self.draw_info(visualization, color_scheme, quality=quality_percent)
+        if show_info or refining:
+            self.screen.blit(self.surface, (0, 0))
+            if show_info:
+                quality_percent = int(quality_factor * 100)
+                self.draw_info(visualization, color_scheme, quality=quality_percent)
             pygame.display.flip()
 
         # Clear refining flag
