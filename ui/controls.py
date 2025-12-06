@@ -2,15 +2,18 @@
 User input controls for fractal visualization.
 
 Handles mouse and keyboard input for panning, zooming, and parameter adjustment.
+Implements smooth animations for Google Maps-style interaction.
 """
 
 import pygame
+import math
 from typing import Optional, Tuple
 
 
 class Controls:
     """
     Handles all user input for the fractal visualizer.
+    Includes smooth zoom animation and inertial panning.
     """
 
     def __init__(self):
@@ -18,6 +21,86 @@ class Controls:
         self.dragging = False
         self.last_mouse_pos: Optional[Tuple[int, int]] = None
         self.show_help = False
+
+        # Smooth zoom animation state
+        self.target_zoom = None  # Target zoom level for animation
+        self.zoom_velocity = 0.0  # Current zoom velocity
+        self.zoom_mouse_world = None  # World position to zoom towards
+        self.zoom_smoothing = 0.15  # Smoothing factor (lower = smoother but slower)
+
+        # Inertial panning state
+        self.pan_velocity_x = 0.0  # World-space velocity
+        self.pan_velocity_y = 0.0
+        self.pan_friction = 0.92  # Velocity decay per frame (lower = more friction)
+        self.pan_min_velocity = 0.00001  # Stop threshold
+        self.last_drag_time = 0  # For velocity calculation
+        self.velocity_samples = []  # Recent velocity samples for smoothing
+
+    def update_animations(self, visualization, renderer, delta_time: float) -> bool:
+        """
+        Update smooth zoom and inertial panning animations.
+
+        Args:
+            visualization: Current visualization
+            renderer: Renderer instance
+            delta_time: Time since last frame in milliseconds
+
+        Returns:
+            True if any animation is active and view changed
+        """
+        changed = False
+        dt = delta_time / 1000.0  # Convert to seconds
+
+        # Update smooth zoom
+        if self.target_zoom is not None:
+            old_zoom = visualization.zoom
+            zoom_diff = self.target_zoom - visualization.zoom
+
+            # Check if we're close enough to snap
+            if abs(zoom_diff) < visualization.zoom * 0.001:
+                visualization.zoom = self.target_zoom
+                self.target_zoom = None
+            else:
+                # Smooth exponential interpolation
+                visualization.zoom += zoom_diff * self.zoom_smoothing * min(delta_time / 16.0, 3.0)
+
+                # Keep zoom centered on mouse position
+                if self.zoom_mouse_world is not None:
+                    zoom_factor = visualization.zoom / old_zoom
+                    world_x, world_y = self.zoom_mouse_world
+                    visualization.center_x = world_x + (visualization.center_x - world_x) / zoom_factor
+                    visualization.center_y = world_y + (visualization.center_y - world_y) / zoom_factor
+
+            # Update max iterations for new zoom
+            visualization.max_iter = visualization.calculate_adaptive_iterations()
+            changed = True
+
+        # Update inertial panning (only when not dragging)
+        if not self.dragging and (abs(self.pan_velocity_x) > self.pan_min_velocity or
+                                   abs(self.pan_velocity_y) > self.pan_min_velocity):
+            # Apply velocity
+            visualization.center_x += self.pan_velocity_x * dt * 60  # Normalize to ~60fps
+            visualization.center_y += self.pan_velocity_y * dt * 60
+
+            # Apply friction
+            self.pan_velocity_x *= self.pan_friction
+            self.pan_velocity_y *= self.pan_friction
+
+            # Stop if below threshold
+            if abs(self.pan_velocity_x) < self.pan_min_velocity:
+                self.pan_velocity_x = 0.0
+            if abs(self.pan_velocity_y) < self.pan_min_velocity:
+                self.pan_velocity_y = 0.0
+
+            changed = True
+
+        return changed
+
+    def is_animating(self) -> bool:
+        """Check if any animation is in progress."""
+        return (self.target_zoom is not None or
+                abs(self.pan_velocity_x) > self.pan_min_velocity or
+                abs(self.pan_velocity_y) > self.pan_min_velocity)
 
     def handle_events(self, visualization, renderer) -> dict:
         """
@@ -165,6 +248,11 @@ class Controls:
         if event.button == 1:  # Left click
             self.dragging = True
             self.last_mouse_pos = event.pos
+            self.last_drag_time = pygame.time.get_ticks()
+            self.velocity_samples = []
+            # Stop any ongoing inertial motion
+            self.pan_velocity_x = 0
+            self.pan_velocity_y = 0
 
         elif event.button == 3:  # Right click
             # Reset view
@@ -178,14 +266,10 @@ class Controls:
                 mouse_x, mouse_y, renderer.width, renderer.height
             )
 
-            # Zoom in
-            old_zoom = visualization.zoom
-            visualization.zoom_in(1.5)
-
-            # Adjust center to zoom towards mouse position
-            zoom_factor = visualization.zoom / old_zoom
-            visualization.center_x = world_x + (visualization.center_x - world_x) / zoom_factor
-            visualization.center_y = world_y + (visualization.center_y - world_y) / zoom_factor
+            # Set target for smooth zoom animation (smaller factor for smoother feel)
+            base_zoom = self.target_zoom if self.target_zoom else visualization.zoom
+            self.target_zoom = base_zoom * 1.25  # Smaller increment for smoother feel
+            self.zoom_mouse_world = (world_x, world_y)
 
             actions['redraw'] = True
 
@@ -196,14 +280,10 @@ class Controls:
                 mouse_x, mouse_y, renderer.width, renderer.height
             )
 
-            # Zoom out
-            old_zoom = visualization.zoom
-            visualization.zoom_out(1.5)
-
-            # Adjust center to zoom from mouse position
-            zoom_factor = visualization.zoom / old_zoom
-            visualization.center_x = world_x + (visualization.center_x - world_x) / zoom_factor
-            visualization.center_y = world_y + (visualization.center_y - world_y) / zoom_factor
+            # Set target for smooth zoom animation
+            base_zoom = self.target_zoom if self.target_zoom else visualization.zoom
+            self.target_zoom = base_zoom / 1.25  # Smaller increment for smoother feel
+            self.zoom_mouse_world = (world_x, world_y)
 
             actions['redraw'] = True
 
@@ -217,8 +297,20 @@ class Controls:
             event: Pygame mouse event
         """
         if event.button == 1:  # Left click
+            # Calculate final velocity from recent samples for inertial panning
+            if self.velocity_samples:
+                # Average the recent velocity samples
+                avg_vx = sum(v[0] for v in self.velocity_samples) / len(self.velocity_samples)
+                avg_vy = sum(v[1] for v in self.velocity_samples) / len(self.velocity_samples)
+
+                # Only apply inertia if we have significant velocity
+                if abs(avg_vx) > 0.0001 or abs(avg_vy) > 0.0001:
+                    self.pan_velocity_x = avg_vx
+                    self.pan_velocity_y = avg_vy
+
             self.dragging = False
             self.last_mouse_pos = None
+            self.velocity_samples = []
 
     def handle_mouse_motion(self, event, visualization, renderer) -> dict:
         """
@@ -247,8 +339,25 @@ class Controls:
             visualization.center_x += world_dx
             visualization.center_y += world_dy
 
+            # Track velocity for inertial panning
+            current_time = pygame.time.get_ticks()
+            if self.last_drag_time > 0:
+                dt = (current_time - self.last_drag_time) / 1000.0  # seconds
+                if dt > 0:
+                    vx = world_dx / dt / 60  # Normalize to per-frame velocity
+                    vy = world_dy / dt / 60
+                    self.velocity_samples.append((vx, vy))
+                    # Keep only recent samples (last 5)
+                    if len(self.velocity_samples) > 5:
+                        self.velocity_samples.pop(0)
+
+            self.last_drag_time = current_time
             self.last_mouse_pos = event.pos
             actions['redraw'] = True
+
+            # Stop any ongoing inertial motion when user starts dragging
+            self.pan_velocity_x = 0
+            self.pan_velocity_y = 0
 
         return actions
 

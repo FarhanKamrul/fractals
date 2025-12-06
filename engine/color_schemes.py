@@ -2,10 +2,12 @@
 Color schemes for fractal visualization.
 
 Provides multiple color palettes and smooth gradient interpolation.
+Includes vectorized color mapping for high-performance rendering.
 """
 
 import math
 from typing import Tuple
+import numpy as np
 
 
 class ColorScheme:
@@ -19,6 +21,7 @@ class ColorScheme:
             name: Display name of the color scheme
         """
         self.name = name
+        self._lut_cache = {}  # Cache for color lookup tables
 
     def get_color(self, iteration: int, max_iter: int) -> Tuple[int, int, int]:
         """
@@ -32,6 +35,47 @@ class ColorScheme:
             Tuple of (R, G, B) values in range [0, 255]
         """
         raise NotImplementedError
+
+    def get_lut(self, max_iter: int) -> np.ndarray:
+        """
+        Get a color lookup table for vectorized rendering.
+
+        Args:
+            max_iter: Maximum iteration count
+
+        Returns:
+            numpy array of shape (max_iter + 1, 3) with RGB values
+        """
+        if max_iter in self._lut_cache:
+            return self._lut_cache[max_iter]
+
+        # Build LUT
+        lut = np.zeros((max_iter + 1, 3), dtype=np.uint8)
+        for i in range(max_iter + 1):
+            lut[i] = self.get_color(i, max_iter)
+
+        # Cache it (limit cache size)
+        if len(self._lut_cache) > 10:
+            self._lut_cache.clear()
+        self._lut_cache[max_iter] = lut
+
+        return lut
+
+    def get_colors_vectorized(self, iterations: np.ndarray, max_iter: int) -> np.ndarray:
+        """
+        Vectorized color mapping using lookup table.
+
+        Args:
+            iterations: 2D array of iteration counts
+            max_iter: Maximum iteration count
+
+        Returns:
+            3D array of RGB values (height, width, 3)
+        """
+        lut = self.get_lut(max_iter)
+        # Clamp iterations to valid range
+        clamped = np.clip(iterations, 0, max_iter)
+        return lut[clamped]
 
 
 class GrayscaleScheme(ColorScheme):

@@ -45,7 +45,7 @@ class Renderer:
         self.camera_state = None  # (center_x, center_y, zoom)
         self.last_render_state = None  # State when surface was last rendered
         self.camera_still_time = 0  # Time camera has been still (ms)
-        self.camera_still_threshold = 150  # ms before starting refinement
+        self.camera_still_threshold = 80  # ms before starting refinement (reduced for responsiveness)
         self.current_quality = 1.0  # Current rendering quality (0.3 = preview, 1.0 = full)
         self.use_progressive_refinement = True
         self.is_refining = False  # Track if currently refining
@@ -142,6 +142,13 @@ class Renderer:
         # Calculate zoom factor and offset
         zoom_factor = new_zoom / old_zoom
 
+        # Check if transform is too extreme (would show mostly black)
+        # In that case, do a quick low-quality render instead
+        if zoom_factor > 4.0 or zoom_factor < 0.25:
+            # Transform too extreme, render fresh preview instead
+            self.render_optimized(visualization, color_scheme, show_info, quality_factor=0.3)
+            return
+
         # Calculate pixel offset due to pan
         aspect = self.width / self.height
         dx_world = new_cx - old_cx
@@ -155,6 +162,9 @@ class Renderer:
         if zoom_factor != 1.0:
             # Zoom: scale around center
             new_size = (int(self.width * zoom_factor), int(self.height * zoom_factor))
+            # Clamp to reasonable size to avoid memory issues
+            new_size = (max(1, min(new_size[0], self.width * 4)),
+                       max(1, min(new_size[1], self.height * 4)))
             scaled = pygame.transform.smoothscale(self.cached_surface, new_size)
 
             # Center the scaled surface
@@ -166,8 +176,9 @@ class Renderer:
             offset_x = int(dx_screen)
             offset_y = int(dy_screen)
 
-        # Clear screen and blit transformed surface
-        self.screen.fill((0, 0, 0))
+        # Fill with a gradient background color (matches typical fractal edge colors)
+        # instead of pure black for a smoother appearance
+        self.screen.fill((10, 10, 20))
         self.screen.blit(scaled, (offset_x, offset_y))
 
         # Draw info overlay
@@ -189,6 +200,9 @@ class Renderer:
             chunk_size: Number of rows to render per frame
             quality_factor: Rendering quality (0.3 = fast preview, 1.0 = full detail)
             refining: If True, renders in-place for refinement
+
+        Returns:
+            bool: True if render completed, False if cancelled
         """
         # Mark as refining if doing refinement pass
         if refining:
@@ -207,8 +221,33 @@ class Renderer:
         else:
             temp_surface = self.surface
 
+        # Track if render was cancelled
+        render_cancelled = False
+
         # Render in chunks to maintain responsiveness
         for start_y in range(0, self.height, chunk_size):
+            # Check for user input that would interrupt rendering
+            if refining:
+                # Peek at events without removing them
+                for event in pygame.event.get():
+                    # Put event back for main loop to handle
+                    pygame.event.post(event)
+                    # Check if this is a camera-affecting event
+                    if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                        if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 4, 5):
+                            # User clicked or scrolled - cancel refinement
+                            render_cancelled = True
+                            break
+                        elif event.type == pygame.MOUSEMOTION:
+                            # Check if dragging
+                            buttons = pygame.mouse.get_pressed()
+                            if buttons[0]:  # Left button held
+                                render_cancelled = True
+                                break
+
+                if render_cancelled:
+                    break
+
             end_y = min(start_y + chunk_size, self.height)
             chunk_height = end_y - start_y
 
@@ -252,25 +291,29 @@ class Renderer:
         # Restore original max_iter
         visualization.max_iter = original_max_iter
 
-        # For refinement, copy temp_surface to main surface and display in one operation
-        if refining:
-            self.surface.blit(temp_surface, (0, 0))
+        # Only complete the render if not cancelled
+        if not render_cancelled:
+            # For refinement, copy temp_surface to main surface and display in one operation
+            if refining:
+                self.surface.blit(temp_surface, (0, 0))
 
-        # Cache the rendered surface and state for smooth zoom/pan
-        if quality_factor >= 0.9:  # Only cache high quality renders
-            self.cached_surface = self.surface.copy()
-            self.last_render_state = (visualization.center_x, visualization.center_y, visualization.zoom)
+            # Cache the rendered surface and state for smooth zoom/pan
+            if quality_factor >= 0.9:  # Only cache high quality renders
+                self.cached_surface = self.surface.copy()
+                self.last_render_state = (visualization.center_x, visualization.center_y, visualization.zoom)
 
-        # Final update without progress bar
-        if show_info or refining:
-            self.screen.blit(self.surface, (0, 0))
-            if show_info:
-                quality_percent = int(quality_factor * 100)
-                self.draw_info(visualization, color_scheme, quality=quality_percent)
-            pygame.display.flip()
+            # Final update without progress bar
+            if show_info or refining:
+                self.screen.blit(self.surface, (0, 0))
+                if show_info:
+                    quality_percent = int(quality_factor * 100)
+                    self.draw_info(visualization, color_scheme, quality=quality_percent)
+                pygame.display.flip()
 
         # Clear refining flag
         self.is_refining = False
+
+        return not render_cancelled
 
     def _compute_fractal_vectorized(self, world_x, world_y, visualization):
         """
@@ -315,6 +358,8 @@ class Renderer:
         """
         Convert iteration counts to RGB colors (vectorized).
 
+        Uses color lookup tables for O(1) color mapping per pixel.
+
         Args:
             iterations: 2D array of iteration counts
             max_iter: Maximum iteration count
@@ -323,18 +368,8 @@ class Renderer:
         Returns:
             3D array of RGB values (height, width, 3)
         """
-        shape = iterations.shape
-        colors = np.zeros((*shape, 3), dtype=np.uint8)
-
-        # Flatten for processing
-        iter_flat = iterations.flatten()
-
-        # Get colors for each iteration count
-        for i in range(len(iter_flat)):
-            color = color_scheme.get_color(iter_flat[i], max_iter)
-            colors.reshape(-1, 3)[i] = color
-
-        return colors
+        # Use the color scheme's vectorized method with LUT
+        return color_scheme.get_colors_vectorized(iterations, max_iter)
 
     def draw_info(self, visualization, color_scheme: ColorScheme,
                  rendering: bool = False, progress: float = 1.0, quality: int = 100):

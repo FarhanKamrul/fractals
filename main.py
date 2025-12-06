@@ -90,6 +90,13 @@ def main():
             if viz_index < selector.get_count():
                 visualization = selector.switch_to(viz_index)
                 print(f"Switched to: {visualization.get_name()}")
+                # Clear any ongoing animations
+                controls.target_zoom = None
+                controls.pan_velocity_x = 0
+                controls.pan_velocity_y = 0
+                # Clear cache since visualization changed
+                renderer.cached_surface = None
+                renderer.last_render_state = None
                 needs_redraw = True
 
         # Cycle color scheme
@@ -97,6 +104,8 @@ def main():
             color_scheme_index = (color_scheme_index + 1) % len(COLOR_SCHEMES)
             color_scheme = get_color_scheme(color_scheme_index)
             print(f"Color scheme: {color_scheme.name}")
+            # Clear cache since colors changed
+            renderer.cached_surface = None
             needs_redraw = True
 
         # Save screenshot
@@ -109,26 +118,30 @@ def main():
         if actions['redraw']:
             needs_redraw = True
 
-        # Check if camera moved
+        # Update animations (smooth zoom and inertial pan)
+        animation_active = controls.update_animations(visualization, renderer, delta_time)
+
+        # Check if camera moved (from any source: input or animation)
         camera_moved = renderer.camera_moved(visualization)
 
         if camera_moved:
             # Camera moved - instantly show transformed cached surface (like Google Maps)
             renderer.render_cached_transformed(visualization, color_scheme)
             needs_refinement = True  # Schedule refinement pass
+            needs_redraw = False  # Don't do full redraw, we have the transform
 
         elif needs_redraw:
             # Needs full redraw (e.g., changed visualization or color scheme)
-            print(f"Rendering: {visualization.get_name()} at zoom {visualization.zoom:.2e} (iterations: {visualization.max_iter})...")
             renderer.render_optimized(visualization, color_scheme, quality_factor=1.0)
             needs_redraw = False
             needs_refinement = False
 
-        elif needs_refinement and renderer.should_refine(delta_time):
-            # Camera still - refine to full quality in-place
-            print(f"Refining to full quality (iterations: {visualization.calculate_adaptive_iterations()})...")
-            renderer.render_optimized(visualization, color_scheme, quality_factor=1.0, refining=True)
-            needs_refinement = False
+        elif needs_refinement and not animation_active and renderer.should_refine(delta_time):
+            # Camera still and no animations - refine to full quality in-place
+            completed = renderer.render_optimized(visualization, color_scheme, quality_factor=1.0, refining=True)
+            if completed:
+                needs_refinement = False
+            # If cancelled, needs_refinement stays True and will retry later
 
     # Clean up
     print()
