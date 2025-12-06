@@ -17,14 +17,14 @@ class BaseVisualization(ABC):
 
     def __init__(self):
         """Initialize the visualization with default parameters."""
-        self.params = self.get_default_params()
-        self.reset_view()
-
-        # Progressive refinement settings
+        # Progressive refinement settings (must be set before reset_view)
         self.base_max_iter = 256  # Base iteration count
         self.use_adaptive_iter = True  # Enable adaptive iteration scaling
         self.iteration_scale_a = 100  # Minimum iterations
         self.iteration_scale_b = 50   # Logarithmic scaling factor
+
+        self.params = self.get_default_params()
+        self.reset_view()
 
     def reset_view(self):
         """Reset the viewport to default position and zoom."""
