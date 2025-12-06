@@ -18,10 +18,10 @@ class BaseVisualization(ABC):
     def __init__(self):
         """Initialize the visualization with default parameters."""
         # Progressive refinement settings (must be set before reset_view)
-        self.base_max_iter = 256  # Base iteration count
+        self.base_max_iter = 512  # Base iteration count (2x increase)
         self.use_adaptive_iter = True  # Enable adaptive iteration scaling
-        self.iteration_scale_a = 100  # Minimum iterations
-        self.iteration_scale_b = 50   # Logarithmic scaling factor
+        self.iteration_scale_a = 200  # Minimum iterations (2x increase)
+        self.iteration_scale_b = 100   # Logarithmic scaling factor (2x increase)
 
         self.params = self.get_default_params()
         self.reset_view()
@@ -32,7 +32,7 @@ class BaseVisualization(ABC):
         self.center_x = defaults.get('center_x', 0.0)
         self.center_y = defaults.get('center_y', 0.0)
         self.zoom = defaults.get('zoom', 1.0)
-        self.base_max_iter = defaults.get('max_iter', 256)
+        self.base_max_iter = defaults.get('max_iter', 512)
         self.max_iter = self.calculate_adaptive_iterations()
 
     def calculate_adaptive_iterations(self, quality_factor: float = 1.0) -> int:

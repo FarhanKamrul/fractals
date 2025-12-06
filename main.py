@@ -98,6 +98,7 @@ def main():
                 renderer.cached_surface = None
                 renderer.last_render_state = None
                 needs_redraw = True
+                needs_refinement = False
 
         # Cycle color scheme
         if actions['cycle_color']:
