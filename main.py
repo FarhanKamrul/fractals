@@ -112,17 +112,22 @@ def main():
         # Check if camera moved
         camera_moved = renderer.camera_moved(visualization)
 
-        if camera_moved or needs_redraw:
-            # Camera moved or needs redraw - render at preview quality for speed
-            print(f"Rendering: {visualization.get_name()} at zoom {visualization.zoom:.2e} (iterations: {visualization.max_iter})...")
-            renderer.render_optimized(visualization, color_scheme, quality_factor=0.4)
-            needs_redraw = False
+        if camera_moved:
+            # Camera moved - instantly show transformed cached surface (like Google Maps)
+            renderer.render_cached_transformed(visualization, color_scheme)
             needs_refinement = True  # Schedule refinement pass
 
-        elif needs_refinement and renderer.should_refine(delta_time):
-            # Camera still - refine to full quality
-            print(f"Refining to full quality...")
+        elif needs_redraw:
+            # Needs full redraw (e.g., changed visualization or color scheme)
+            print(f"Rendering: {visualization.get_name()} at zoom {visualization.zoom:.2e} (iterations: {visualization.max_iter})...")
             renderer.render_optimized(visualization, color_scheme, quality_factor=1.0)
+            needs_redraw = False
+            needs_refinement = False
+
+        elif needs_refinement and renderer.should_refine(delta_time):
+            # Camera still - refine to full quality in-place
+            print(f"Refining to full quality (iterations: {visualization.calculate_adaptive_iterations()})...")
+            renderer.render_optimized(visualization, color_scheme, quality_factor=1.0, refining=True)
             needs_refinement = False
 
     # Clean up

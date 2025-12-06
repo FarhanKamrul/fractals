@@ -39,13 +39,16 @@ class Renderer:
 
         # Rendering surface
         self.surface = pygame.Surface((width, height))
+        self.cached_surface = None  # Cache for instant zoom/pan
 
         # Progressive refinement state
         self.camera_state = None  # (center_x, center_y, zoom)
+        self.last_render_state = None  # State when surface was last rendered
         self.camera_still_time = 0  # Time camera has been still (ms)
-        self.camera_still_threshold = 200  # ms before starting refinement
+        self.camera_still_threshold = 150  # ms before starting refinement
         self.current_quality = 1.0  # Current rendering quality (0.3 = preview, 1.0 = full)
         self.use_progressive_refinement = True
+        self.is_refining = False  # Track if currently refining
 
     def render(self, visualization, color_scheme: ColorScheme, show_info: bool = True):
         """
@@ -111,15 +114,71 @@ class Renderer:
         Returns:
             True if camera has been still long enough
         """
-        if not self.use_progressive_refinement:
+        if not self.use_progressive_refinement or self.is_refining:
             return False
 
         self.camera_still_time += delta_time
         return self.camera_still_time >= self.camera_still_threshold
 
+    def render_cached_transformed(self, visualization, color_scheme: ColorScheme, show_info: bool = True):
+        """
+        Instantly display cached surface transformed for new camera position.
+        This provides smooth zoom/pan like Google Maps.
+
+        Args:
+            visualization: Current visualization
+            color_scheme: Current color scheme
+            show_info: Whether to show info overlay
+        """
+        if self.cached_surface is None or self.last_render_state is None:
+            # No cache available, render from scratch
+            self.render_optimized(visualization, color_scheme, show_info, quality_factor=0.3)
+            return
+
+        # Get camera transform
+        old_cx, old_cy, old_zoom = self.last_render_state
+        new_cx, new_cy, new_zoom = visualization.center_x, visualization.center_y, visualization.zoom
+
+        # Calculate zoom factor and offset
+        zoom_factor = new_zoom / old_zoom
+
+        # Calculate pixel offset due to pan
+        aspect = self.width / self.height
+        dx_world = new_cx - old_cx
+        dy_world = new_cy - old_cy
+
+        # Convert world space delta to screen space
+        dx_screen = -dx_world * old_zoom * self.width / (2 * aspect)
+        dy_screen = -dy_world * old_zoom * self.height / 2
+
+        # Scale and transform cached surface
+        if zoom_factor != 1.0:
+            # Zoom: scale around center
+            new_size = (int(self.width * zoom_factor), int(self.height * zoom_factor))
+            scaled = pygame.transform.smoothscale(self.cached_surface, new_size)
+
+            # Center the scaled surface
+            offset_x = (self.width - new_size[0]) // 2 + int(dx_screen * zoom_factor)
+            offset_y = (self.height - new_size[1]) // 2 + int(dy_screen * zoom_factor)
+        else:
+            # Just pan
+            scaled = self.cached_surface
+            offset_x = int(dx_screen)
+            offset_y = int(dy_screen)
+
+        # Clear screen and blit transformed surface
+        self.screen.fill((0, 0, 0))
+        self.screen.blit(scaled, (offset_x, offset_y))
+
+        # Draw info overlay
+        if show_info:
+            self.draw_info(visualization, color_scheme, quality=0)  # 0 = transforming cached
+
+        pygame.display.flip()
+
     def render_optimized(self, visualization, color_scheme: ColorScheme,
                         show_info: bool = True, chunk_size: int = 64,
-                        quality_factor: float = 1.0):
+                        quality_factor: float = 1.0, refining: bool = False):
         """
         Optimized rendering with numpy arrays, chunked updates, and progressive refinement.
 
@@ -129,7 +188,12 @@ class Renderer:
             show_info: Whether to display info overlay
             chunk_size: Number of rows to render per frame
             quality_factor: Rendering quality (0.3 = fast preview, 1.0 = full detail)
+            refining: If True, renders in-place for refinement
         """
+        # Mark as refining if doing refinement pass
+        if refining:
+            self.is_refining = True
+
         # Create coordinate grids
         aspect = self.width / self.height
 
@@ -181,11 +245,19 @@ class Renderer:
         # Restore original max_iter
         visualization.max_iter = original_max_iter
 
+        # Cache the rendered surface and state for smooth zoom/pan
+        if quality_factor >= 0.9:  # Only cache high quality renders
+            self.cached_surface = self.surface.copy()
+            self.last_render_state = (visualization.center_x, visualization.center_y, visualization.zoom)
+
         # Final update without progress bar
         if show_info:
             quality_percent = int(quality_factor * 100)
             self.draw_info(visualization, color_scheme, quality=quality_percent)
             pygame.display.flip()
+
+        # Clear refining flag
+        self.is_refining = False
 
     def _compute_fractal_vectorized(self, world_x, world_y, visualization):
         """
@@ -284,9 +356,17 @@ class Renderer:
         fps_surface = self.small_font.render(fps_text, True, (200, 200, 200))
         self.screen.blit(fps_surface, (10, 55))
 
-        # Quality indicator (green if 100%, yellow if preview)
-        quality_color = (0, 255, 0) if quality >= 100 else (255, 200, 0)
-        quality_text = f"Quality: {quality}%"
+        # Quality indicator (green if 100%, yellow if preview, cyan if cached transform)
+        if quality == 0:
+            quality_color = (0, 255, 255)  # Cyan for cached transform
+            quality_text = "Quality: Cached"
+        elif quality >= 100:
+            quality_color = (0, 255, 0)  # Green for full quality
+            quality_text = f"Quality: {quality}%"
+        else:
+            quality_color = (255, 200, 0)  # Yellow for preview
+            quality_text = f"Quality: {quality}%"
+
         quality_surface = self.small_font.render(quality_text, True, quality_color)
         self.screen.blit(quality_surface, (120, 55))
 
