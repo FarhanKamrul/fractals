@@ -90,7 +90,11 @@ def main():
             if viz_index < selector.get_count():
                 visualization = selector.switch_to(viz_index)
                 print(f"Switched to: {visualization.get_name()}")
+                # Clear cached state when switching visualizations
+                renderer.cached_surface = None
+                renderer.last_render_state = None
                 needs_redraw = True
+                needs_refinement = False
 
         # Cycle color scheme
         if actions['cycle_color']:

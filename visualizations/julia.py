@@ -194,7 +194,7 @@ class Julia(BaseVisualization):
             'center_x': 0.0,
             'center_y': 0.0,
             'zoom': 1.0,  # 2x zoom increase from 0.5
-            'max_iter': 256,
+            'max_iter': 512,  # 2x iteration increase
             'escape_radius': 2.0,
             'c_real': -0.7,
             'c_imag': 0.27015,
