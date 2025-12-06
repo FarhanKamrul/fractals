@@ -97,6 +97,8 @@ def main():
                 # Clear cache since visualization changed
                 renderer.cached_surface = None
                 renderer.last_render_state = None
+                # Update camera state to prevent false camera_moved detection
+                renderer.camera_state = (visualization.center_x, visualization.center_y, visualization.zoom)
                 needs_redraw = True
                 needs_refinement = False
 
