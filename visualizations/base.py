@@ -4,6 +4,7 @@ Base visualization class that all fractals inherit from.
 
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple
+import math
 
 
 class BaseVisualization(ABC):
@@ -19,13 +20,51 @@ class BaseVisualization(ABC):
         self.params = self.get_default_params()
         self.reset_view()
 
+        # Progressive refinement settings
+        self.base_max_iter = 256  # Base iteration count
+        self.use_adaptive_iter = True  # Enable adaptive iteration scaling
+        self.iteration_scale_a = 100  # Minimum iterations
+        self.iteration_scale_b = 50   # Logarithmic scaling factor
+
     def reset_view(self):
         """Reset the viewport to default position and zoom."""
         defaults = self.get_default_params()
         self.center_x = defaults.get('center_x', 0.0)
         self.center_y = defaults.get('center_y', 0.0)
         self.zoom = defaults.get('zoom', 1.0)
-        self.max_iter = defaults.get('max_iter', 256)
+        self.base_max_iter = defaults.get('max_iter', 256)
+        self.max_iter = self.calculate_adaptive_iterations()
+
+    def calculate_adaptive_iterations(self, quality_factor: float = 1.0) -> int:
+        """
+        Calculate iteration count based on zoom level using logarithmic scaling.
+
+        Formula: maxIter = a + b·log(zoom) * quality_factor
+
+        Args:
+            quality_factor: Multiplier for iteration count (0.5 = half, 1.0 = full, 2.0 = double)
+
+        Returns:
+            Appropriate iteration count for current zoom level
+        """
+        if not self.use_adaptive_iter:
+            return int(self.base_max_iter * quality_factor)
+
+        # Logarithmic scaling: more zoom = more detail needed
+        # log(1) = 0, so at zoom=1 we get base iterations
+        # As zoom increases logarithmically, iterations increase
+        if self.zoom > 1.0:
+            log_zoom = math.log10(self.zoom)
+            adaptive_iter = self.iteration_scale_a + self.iteration_scale_b * log_zoom
+        else:
+            # At low zoom, use minimum iterations
+            adaptive_iter = self.iteration_scale_a
+
+        # Apply quality factor for progressive refinement
+        adaptive_iter = int(adaptive_iter * quality_factor)
+
+        # Clamp to reasonable range
+        return max(50, min(10000, adaptive_iter))
 
     @abstractmethod
     def compute(self, x: float, y: float) -> int:
@@ -101,6 +140,8 @@ class BaseVisualization(ABC):
             factor: Zoom multiplication factor (default 2.0)
         """
         self.zoom *= factor
+        # Recalculate iterations for new zoom level
+        self.max_iter = self.calculate_adaptive_iterations()
 
     def zoom_out(self, factor: float = 2.0):
         """
@@ -110,6 +151,8 @@ class BaseVisualization(ABC):
             factor: Zoom division factor (default 2.0)
         """
         self.zoom /= factor
+        # Recalculate iterations for new zoom level
+        self.max_iter = self.calculate_adaptive_iterations()
 
     def pan(self, dx: float, dy: float):
         """

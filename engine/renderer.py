@@ -40,6 +40,13 @@ class Renderer:
         # Rendering surface
         self.surface = pygame.Surface((width, height))
 
+        # Progressive refinement state
+        self.camera_state = None  # (center_x, center_y, zoom)
+        self.camera_still_time = 0  # Time camera has been still (ms)
+        self.camera_still_threshold = 200  # ms before starting refinement
+        self.current_quality = 1.0  # Current rendering quality (0.3 = preview, 1.0 = full)
+        self.use_progressive_refinement = True
+
     def render(self, visualization, color_scheme: ColorScheme, show_info: bool = True):
         """
         Render a visualization to the screen.
@@ -75,19 +82,60 @@ class Renderer:
 
         pygame.display.flip()
 
-    def render_optimized(self, visualization, color_scheme: ColorScheme,
-                        show_info: bool = True, chunk_size: int = 64):
+    def camera_moved(self, visualization) -> bool:
         """
-        Optimized rendering with numpy arrays and chunked updates.
+        Check if camera has moved since last check.
+
+        Args:
+            visualization: Visualization to check camera state
+
+        Returns:
+            True if camera moved, False if still
+        """
+        current_state = (visualization.center_x, visualization.center_y, visualization.zoom)
+
+        if self.camera_state != current_state:
+            self.camera_state = current_state
+            self.camera_still_time = 0
+            return True
+
+        return False
+
+    def should_refine(self, delta_time: int) -> bool:
+        """
+        Check if we should perform refinement pass.
+
+        Args:
+            delta_time: Time elapsed since last frame (ms)
+
+        Returns:
+            True if camera has been still long enough
+        """
+        if not self.use_progressive_refinement:
+            return False
+
+        self.camera_still_time += delta_time
+        return self.camera_still_time >= self.camera_still_threshold
+
+    def render_optimized(self, visualization, color_scheme: ColorScheme,
+                        show_info: bool = True, chunk_size: int = 64,
+                        quality_factor: float = 1.0):
+        """
+        Optimized rendering with numpy arrays, chunked updates, and progressive refinement.
 
         Args:
             visualization: BaseVisualization instance to render
             color_scheme: ColorScheme instance for coloring
             show_info: Whether to display info overlay
             chunk_size: Number of rows to render per frame
+            quality_factor: Rendering quality (0.3 = fast preview, 1.0 = full detail)
         """
         # Create coordinate grids
         aspect = self.width / self.height
+
+        # Set iteration count based on quality factor
+        original_max_iter = visualization.max_iter
+        visualization.max_iter = visualization.calculate_adaptive_iterations(quality_factor)
 
         # Render in chunks to maintain responsiveness
         for start_y in range(0, self.height, chunk_size):
@@ -125,13 +173,18 @@ class Renderer:
             # Update display with partial progress
             self.screen.blit(self.surface, (0, 0))
             if show_info:
+                quality_percent = int(quality_factor * 100)
                 self.draw_info(visualization, color_scheme, rendering=True,
-                             progress=end_y / self.height)
+                             progress=end_y / self.height, quality=quality_percent)
             pygame.display.flip()
+
+        # Restore original max_iter
+        visualization.max_iter = original_max_iter
 
         # Final update without progress bar
         if show_info:
-            self.draw_info(visualization, color_scheme)
+            quality_percent = int(quality_factor * 100)
+            self.draw_info(visualization, color_scheme, quality=quality_percent)
             pygame.display.flip()
 
     def _compute_fractal_vectorized(self, world_x, world_y, visualization):
@@ -199,7 +252,7 @@ class Renderer:
         return colors
 
     def draw_info(self, visualization, color_scheme: ColorScheme,
-                 rendering: bool = False, progress: float = 1.0):
+                 rendering: bool = False, progress: float = 1.0, quality: int = 100):
         """
         Draw information overlay on screen.
 
@@ -208,6 +261,7 @@ class Renderer:
             color_scheme: Current color scheme
             rendering: Whether currently rendering
             progress: Rendering progress (0.0 to 1.0)
+            quality: Rendering quality percentage (30 = preview, 100 = full)
         """
         # Semi-transparent background
         overlay = pygame.Surface((self.width, 80))
@@ -225,10 +279,16 @@ class Renderer:
         scheme_surface = self.small_font.render(scheme_text, True, (200, 200, 200))
         self.screen.blit(scheme_surface, (10, 35))
 
-        # FPS counter
+        # FPS counter and quality
         fps_text = f"FPS: {int(self.clock.get_fps())}"
         fps_surface = self.small_font.render(fps_text, True, (200, 200, 200))
         self.screen.blit(fps_surface, (10, 55))
+
+        # Quality indicator (green if 100%, yellow if preview)
+        quality_color = (0, 255, 0) if quality >= 100 else (255, 200, 0)
+        quality_text = f"Quality: {quality}%"
+        quality_surface = self.small_font.render(quality_text, True, quality_color)
+        self.screen.blit(quality_surface, (120, 55))
 
         # Rendering progress bar
         if rendering and progress < 1.0:
